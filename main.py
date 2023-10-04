@@ -1,76 +1,121 @@
 import os
 import cv2
-import numpy as np
+import svgwrite as sw
 
-def main():
-    print(f"sss")
+class Directory:
+    def __init__(self, directory):
+        images = Images()
+        for file in os.listdir(directory):
+            file_path = os.path.join(directory, file)
+            if os.path.isfile(file_path):
+                image = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
+                if not image is None:
+                    images.addImage(file_path, image)
 
-def get_image_file_paths(directory):
-    image_file_paths = []
-    for file in os.listdir(directory):
-        file_path = os.path.join(directory, file)
-        if os.path.isfile(file_path):
-            if not cv2.imread(file_path, cv2.IMREAD_UNCHANGED) is None:
-                image_file_paths.append(file_path)
-    return image_file_paths
+        images.panorama_add_first_image()
+        while len(images.free_images) != 0:
+            images.panorama_add_next_image()
+        images.panorama_coordinate_normalization()
+        images.save_panorama_svg()
 
-def image_expand(image, new_shape):
-    result = np.zeros(new_shape, dtype=np.uint8)
-    result[:image.shape[0], :image.shape[1], :image.shape[2]] = image
-    return result
+class Images:
+    def __init__(self):
+        self.__next_key = 1
+        self.__free_images = []
+        self.__panorama_images = []
 
-def shifting(image, d_x, d_y):
-    h, w = image.shape[:2]
-    translation_matrix = np.float32([[1, 0, d_y], [0, 1, d_x]])
-    result = cv2.warpAffine(image, translation_matrix, (w, h))
-    return result
+    def addImage(self, file_path, image):
+        self.__free_images.append(Image(image, self.__next_key, file_path))
+        self.__next_key += 1
 
-def append_image(panorama, image_file_path):
-    image = cv2.imread(image_file_path)
+    def process(self):
+        if len(self.__free_images) == 0:
+            print("empty directory")
+            return
+        self.__panorama_add_first_image()
+        while len(self.__free_images) != 0:
+            self.__panorama_add_next_image()
+        self.__panorama_coordinate_normalization()
+        self.__save_panorama_svg()
 
-    orb = cv2.ORB_create()
-    panorama_kp, panorama_des = orb.detectAndCompute(panorama, None)
-    image_kp, image_des = orb.detectAndCompute(image, None)
-    matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-    matches = matcher.match(panorama_des, image_des)
-    matches = sorted(matches, key=lambda x: x.distance)
+    def __getImage(self, key):
+        for image in self.__free_images:
+            if image.key == key:
+                return image
+        for image in self.__panorama_images:
+            if image.key == key:
+                return image
 
-    (panorama_w, panorama_h) = (panorama.shape[1], panorama.shape[0])
-    (image_w, image_h) = (image.shape[1], image.shape[0])
-    panorama_kp_pts = panorama_kp[matches[0].queryIdx].pt
-    image_kp_pts = image_kp[matches[0].trainIdx].pt
-    result_kp_pts = (max(panorama_kp_pts[0], image_kp_pts[0]), max(panorama_kp_pts[1], image_kp_pts[1]))
-    result_w = max( result_kp_pts[0] + panorama_w - panorama_kp_pts[0], result_kp_pts[0] + image_w - image_kp_pts[0] )
-    result_h = max( result_kp_pts[1] + panorama_h - panorama_kp_pts[1], result_kp_pts[1] + image_h - image_kp_pts[1] )
-    result_shape = (int(result_h),int(result_w),3)
+    def __panorama_add_first_image(self):
+        image = self.__free_images[0]
+        self.__panorama_images.append(image)
+        self.__free_images.remove(image)
+        image.panorama_x = 0
+        image.panorama_y = 0
 
-    #cv2.imshow("Matches", cv2.resize(cv2.drawMatches(panorama, panorama_kp, image, image_kp, matches[:1], None), (1600, 900)))
-    #cv2.waitKey()
+    def __panorama_add_next_image(self):
+        matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        distance = -1
+        for panorama_image in self.__panorama_images:
+            for image in self.__free_images:
+                matches = matcher.match(panorama_image.des, image.des)
+                matches = sorted(matches, key=lambda x: x.distance)
+                if distance == -1 or distance > matches[0].distance:
+                    distance = matches[0].distance
+                    key = image.key
+                    panorama_x = panorama_image.panorama_x + panorama_image.kp[matches[0].queryIdx].pt[0] - image.kp[matches[0].trainIdx].pt[0]
+                    panorama_y = panorama_image.panorama_y + panorama_image.kp[matches[0].queryIdx].pt[1] - image.kp[matches[0].trainIdx].pt[1]
+        image = self.__getImage(key)
+        image.panorama_x = panorama_x
+        image.panorama_y = panorama_y
+        self.__free_images.remove(image)
+        self.__panorama_images.append(image)
+    def __panorama_coordinate_normalization(self):
+        min_x = 0
+        min_y = 0
+        #смещает систему координат ликвидируя отрицательные координаты изображений
+        for image in self.__panorama_images:
+            if image.panorama_x < min_x:
+                min_x = image.panorama_x
+            if image.panorama_y < min_y:
+                min_y = image.panorama_y
+        for image in self.__panorama_images:
+            image.panorama_x = int(image.panorama_x - min_x)
+            image.panorama_y = int(image.panorama_y - min_y)
 
-    panorama = image_expand(panorama, result_shape)
-    panorama = shifting(panorama, result_kp_pts[1]-panorama_kp_pts[1], result_kp_pts[0]-panorama_kp_pts[0])
-    image = image_expand(image, result_shape)
-    image = shifting(image, result_kp_pts[1] - image_kp_pts[1], result_kp_pts[0] - image_kp_pts[0])
+    def __get_panorama_shape(self):
+        max_x = 0
+        max_y = 0
+        for image in self.__panorama_images:
+            if max_x < image.panorama_x + image.image.shape[1]:
+                max_x = image.panorama_x + image.image.shape[1]
+            if max_y < image.panorama_y + image.image.shape[0]:
+                max_y = image.panorama_y + image.image.shape[0]
+        return max_x, max_y
 
-    panorama2gray = cv2.cvtColor(panorama, cv2.COLOR_BGR2GRAY)
-    ret, mask = cv2.threshold(panorama2gray, 10, 255, cv2.THRESH_BINARY)
-    mask_inv = cv2.bitwise_not(mask)
-    image_bg = cv2.bitwise_and(image, image, mask=mask_inv)
-    panorama_fg = cv2.bitwise_and(panorama, panorama, mask=mask)
+    def __save_panorama_svg(self):
+        width, height = self.__get_panorama_shape()
+        dwg = sw.Drawing(size = (width, height))
+        for image in self.__panorama_images:
+            dwg.add(dwg.image(image.file_path, (image.panorama_x, image.panorama_y), (image.image.shape[1], image.image.shape[0])))
+        dwg.saveas("panorama.svg")
+        print("panorama.svg was created")
 
-    result = np.zeros(result_shape, np.uint8)
-    result = cv2.add(result, image_bg)
-    result = cv2.add(result, panorama_fg)
-    return result
+class Image:
+    def __init__(self, image, key, file_path):
+        self.key = key
+        self.file_path = file_path
+        self.image = image
+        orb = cv2.ORB_create()
+        self.kp, self.des = orb.detectAndCompute(self.image, None)
 
-final_image = []
-i = 0;
-for image_file_path in get_image_file_paths("1"):
-    if i == 0:
-        final_image = cv2.imread(image_file_path, cv2.IMREAD_UNCHANGED)
-    else:
-        final_image = append_image(final_image, image_file_path)
-    i = i + 1
-final_image = cv2.resize(final_image, (1600, 900))
-cv2.imshow("Panorama", final_image)
-cv2.waitKey()
+directory = "1"
+
+images = Images()
+for file in os.listdir(directory):
+    file_path = os.path.join(directory, file)
+    if os.path.isfile(file_path):
+        image = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
+        if not image is None:
+            images.addImage(file_path, image)
+images.process()
