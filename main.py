@@ -2,22 +2,6 @@ import os
 import cv2
 import svgwrite as sw
 
-class Directory:
-    def __init__(self, directory):
-        images = Images()
-        for file in os.listdir(directory):
-            file_path = os.path.join(directory, file)
-            if os.path.isfile(file_path):
-                image = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
-                if not image is None:
-                    images.addImage(file_path, image)
-
-        images.panorama_add_first_image()
-        while len(images.free_images) != 0:
-            images.panorama_add_next_image()
-        images.panorama_coordinate_normalization()
-        images.save_panorama_svg()
-
 class Images:
     def __init__(self):
         self.__next_key = 1
